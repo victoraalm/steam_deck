@@ -1,0 +1,64 @@
+#!/bin/bash
+
+#!/bin/bash
+
+# Verifica se o script está rodando em um terminal
+if [ -z "$KONSOLE_DBUS_SESSION" ]; then
+    # Se não estiver, abre um novo terminal e executa o script nele
+    echo "Abrindo um novo terminal para execução do script..."
+    konsole --hold -e bash -c "$0"
+    exit 0
+fi
+
+# A partir daqui, o script está rodando dentro de um terminal
+
+# Função para verificar e adicionar o texto no arquivo, se necessário
+add_to_file() {
+    local file="$1"
+    local text1="# Adicionar binario do /sd128"
+    local text2="export PATH=/home/deck/.local/bin:\$PATH"
+
+    # Verificar se as duas linhas já existem no arquivo
+    if grep -Fxq "$text1" "$file" && grep -Fxq "$text2" "$file"; then
+        echo "Texto já existe em $file"
+    else
+        # Se o arquivo não estiver vazio, pula uma linha antes de adicionar o texto
+        if [ -s "$file" ]; then
+            echo -e "\n$text1\n$text2" >> "$file"
+        else
+            echo -e "$text1\n$text2" >> "$file"
+        fi
+        echo "Texto adicionado ao final de $file"
+    fi
+}
+
+# Passo 1: Verificar se o arquivo .profile existe
+PROFILE_FILE="/home/deck/.profile"
+if [ ! -f "$PROFILE_FILE" ]; then
+    touch "$PROFILE_FILE"
+    echo "Arquivo .profile criado."
+else
+    echo "Arquivo .profile já existe."
+fi
+
+# Passo 2: Verificar e adicionar texto nos arquivos .bashrc, .bash_profile, e .profile
+FILES_TO_CHECK=("/home/deck/.bashrc" "/home/deck/.bash_profile" "$PROFILE_FILE")
+
+for file in "${FILES_TO_CHECK[@]}"; do
+    if [ -f "$file" ]; then
+        add_to_file "$file"
+    else
+        echo "Arquivo $file não encontrado. Criando o arquivo."
+        touch "$file"
+        add_to_file "$file"
+    fi
+done
+
+# Passo 3: Verificar se o arquivo .zsh existe
+ZSH_FILE="/home/deck/.zsh"
+if [ -f "$ZSH_FILE" ]; then
+    echo "Arquivo .zsh encontrado."
+    add_to_file "$ZSH_FILE"
+else
+    echo "Arquivo .zsh não encontrado. Nada mais a fazer."
+fi

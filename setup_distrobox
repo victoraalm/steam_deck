@@ -1,0 +1,152 @@
+#!/bin/bash
+
+# Verifica se o script está rodando em um terminal
+if [ -z "$KONSOLE_DBUS_SESSION" ]; then
+    # Se não estiver, abre um novo terminal e executa o script nele
+    echo "Abrindo um novo terminal para execução do script..."
+    konsole --hold -e bash -c "$0"
+    exit 0
+fi
+
+# A partir daqui, o script está rodando dentro de um terminal
+
+# Caminho onde o script de instalação será salvo temporariamente
+installer_path="$HOME/.local/distrobox_installer.sh"
+temp_installer_path="$HOME/.local/distrobox_installer_temp.sh"
+
+# Verifica se o instalador do Distrobox já existe
+if [ -f "$installer_path" ]; then
+    echo "O instalador do Distrobox já foi baixado em $installer_path. Pulando o download..."
+else
+    # Baixa o instalador do Distrobox se ele não existir
+    echo "Baixando o instalador do Distrobox..."
+    curl -s https://raw.githubusercontent.com/89luca89/distrobox/main/install -o "$installer_path"
+
+    # Verifica se o download foi bem-sucedido
+    if [ $? -eq 0 ]; then
+        echo "Download do instalador do Distrobox concluído com sucesso."
+    else
+        echo "Falha no download do instalador do Distrobox."
+        exit 1
+    fi
+fi
+
+# Gera um script temporário com a lógica de --install-only
+cat << 'EOF' > "$temp_installer_path"
+#!/bin/bash
+
+# A lógica de instalação do Distrobox
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --install-only) install_only="$2"; shift ;;
+        *) echo "Unknown parameter passed: $1"; exit 1 ;;
+    esac
+    shift
+done
+
+# Aqui, você deve adicionar a lógica de instalação do Distrobox
+# Lógica para instalar o arquivo específico se não existir
+if [ -n "$install_only" ]; then
+    echo "Verificando a instalação de $install_only..."
+
+    # Exemplo de lógica para a instalação dos arquivos
+    # Aqui você deve colocar a lógica real de instalação
+    if [ ! -f "$install_only" ]; then
+        echo "Instalando $install_only..."
+        # Insira a lógica para instalar o arquivo específico
+        # Substitua o comando abaixo pela lógica real de instalação
+        # Exemplo: cp /path/to/your/files/$install_only /destination/path/
+
+        # Para fins de exemplo, apenas cria um arquivo vazio para simular a instalação
+        touch "$install_only"
+    else
+        echo "$install_only já está instalado."
+    fi
+    exit 0
+fi
+
+# O restante da lógica original de instalação do Distrobox deve ir aqui
+EOF
+
+# Torna o script temporário executável
+chmod +x "$temp_installer_path"
+
+# Define os arquivos que o Distrobox deve ter
+distrobox_files=(
+    "$HOME/.local/bin/distrobox"
+    "$HOME/.local/bin/distrobox-assemble"
+    "$HOME/.local/bin/distrobox-create"
+    "$HOME/.local/bin/distrobox-enter"
+    "$HOME/.local/bin/distrobox-ephemeral"
+    "$HOME/.local/bin/distrobox-export"
+    "$HOME/.local/bin/distrobox-generate-entry"
+    "$HOME/.local/bin/distrobox-host-exec"
+    "$HOME/.local/bin/distrobox-init"
+    "$HOME/.local/bin/distrobox-list"
+    "$HOME/.local/bin/distrobox-rm"
+    "$HOME/.local/bin/distrobox-stop"
+    "$HOME/.local/bin/distrobox-upgrade"
+    "$HOME/.local/share/man/man1/distrobox-assemble.1"
+    "$HOME/.local/share/man/man1/distrobox-compatibility.1"
+    "$HOME/.local/share/man/man1/distrobox-create.1"
+    "$HOME/.local/share/man/man1/distrobox-enter.1"
+    "$HOME/.local/share/man/man1/distrobox-ephemeral.1"
+    "$HOME/.local/share/man/man1/distrobox-export.1"
+    "$HOME/.local/share/man/man1/distrobox-generate-entry.1"
+    "$HOME/.local/share/man/man1/distrobox-host-exec.1"
+    "$HOME/.local/share/man/man1/distrobox-init.1"
+    "$HOME/.local/share/man/man1/distrobox-list.1"
+    "$HOME/.local/share/man/man1/distrobox-rm.1"
+    "$HOME/.local/share/man/man1/distrobox-stop.1"
+    "$HOME/.local/share/man/man1/distrobox-upgrade.1"
+    "$HOME/.local/share/man/man1/distrobox.1"
+)
+
+# Verifica se os arquivos do Distrobox já existem
+files_missing=false
+for file in "${distrobox_files[@]}"; do
+    if [ ! -f "$file" ]; then
+        echo "O arquivo $file está faltando. O instalador será executado."
+        files_missing=true
+        # Chama o script temporário para instalar o arquivo que está faltando
+        sh "$temp_installer_path" --install-only "$file"
+    else
+        echo "O arquivo $file existe."
+    fi
+done
+
+# Se algum arquivo estiver faltando, continua a instalação
+if [ "$files_missing" = true ]; then
+    echo "Instalando ou reparando o Distrobox..."
+    sh "$installer_path" --prefix "$HOME/.local"
+else
+    echo "Todos os arquivos do Distrobox estão presentes. Nenhuma ação necessária."
+fi
+
+# Define o caminho do arquivo ~/.distroboxrc
+distroboxrc="$HOME/.distroboxrc"
+
+# Texto a ser adicionado no arquivo
+required_text="xhost +si:localuser:\$USER >/dev/null
+export PIPEWIRE_RUNTIME_DIR=/dev/null
+export PATH=\$PATH:\$HOME/.local/bin"
+
+# Verifica se o arquivo ~/.distroboxrc existe
+if [ ! -f "$distroboxrc" ]; then
+    # Se o arquivo não existe, cria e adiciona o texto
+    echo "Arquivo $distroboxrc não encontrado. Criando o arquivo e adicionando as configurações..."
+    echo "$required_text" > "$distroboxrc"
+else
+    # Se o arquivo existe, verifica se o texto já está presente
+    if grep -qF "$required_text" "$distroboxrc"; then
+        echo "As configurações já estão presentes em $distroboxrc. Nenhuma ação necessária."
+    else
+        # Adiciona o texto no final do arquivo se não estiver presente
+        echo "Adicionando as configurações ao arquivo $distroboxrc..."
+        echo "$required_text" >> "$distroboxrc"
+    fi
+fi
+
+rm -rf /home/deck/.local/distrobox_installer_temp.sh /home/deck/.local/distrobox_installer.sh
+
+echo "Script concluído."

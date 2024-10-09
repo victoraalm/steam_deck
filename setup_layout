@@ -1,0 +1,55 @@
+#!/bin/bash
+
+# Verifica se o script está rodando em um terminal
+if [ -z "$KONSOLE_DBUS_SESSION" ]; then
+    # Se não estiver, abre um novo terminal e executa o script nele
+    echo "Abrindo um novo terminal para execução do script..."
+    konsole --hold -e bash -c "$0"
+    exit 0
+fi
+
+# A partir daqui, o script está rodando dentro de um terminal
+# Configura o layout do teclado
+echo "Configurando layout do teclado para 'us (alt-intl)'..."
+setxkbmap -model pc104 -layout us -variant alt-intl
+
+# Verificar se a configuração foi aplicada corretamente
+echo "Configuração de teclado atual:"
+setxkbmap -query
+
+# Configurando localidade (locale) para en_US.UTF-8
+echo "Configurando localidade do sistema para en_US.UTF-8..."
+localectl set-locale LANG=en_US.UTF-8
+
+# Configurando fuso horário para America/Sao_Paulo
+echo "Configurando o fuso horário para America/Sao_Paulo..."
+timedatectl set-timezone America/Sao_Paulo
+
+# Sincronizar o relógio do sistema com NTP
+echo "Sincronizando o relógio do sistema com NTP..."
+timedatectl set-ntp true
+
+# Verificando configurações atuais do sistema
+echo "Status de localidade e teclado:"
+localectl status
+
+echo "Formato de tempo (LC_TIME):"
+locale -k LC_TIME
+
+# Modificando LC_TIME para garantir o formato correto de data e hora
+echo "Configurando o formato de data e hora (LC_TIME)..."
+export LC_TIME="en_US.UTF-8"
+
+# Validando a configuração de LC_TIME
+echo "Verificando formato de data..."
+locale -k LC_TIME | grep 'date_fmt'
+
+# Exibir informações de data e hora atuais
+echo "Exibindo configuração de data e hora:"
+timedatectl
+
+# Exibir todas as configurações de localidade
+echo "Configurações completas de localidade:"
+locale
+
+echo "Configuração concluída."

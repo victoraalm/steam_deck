@@ -1,0 +1,39 @@
+#!/bin/bash
+
+# Verifica se o script está rodando em um terminal
+if [ -z "$KONSOLE_DBUS_SESSION" ]; then
+    # Se não estiver, abre um novo terminal e executa o script nele
+    echo "Abrindo um novo terminal para execução do script..."
+    konsole --hold -e bash -c "$0"
+    exit 0
+fi
+
+# A partir daqui, o script está rodando dentro de um terminal
+
+# Identifica onde a partição mmcblk0p1 está montada
+mount_point=$(findmnt -n -o TARGET /dev/mmcblk0p1)
+
+# Verifica se a partição está montada
+if [ -z "$mount_point" ]; then
+    echo "A partição /dev/mmcblk0p1 não está montada."
+    exit 1
+else
+    echo "A partição /dev/mmcblk0p1 está montada em: $mount_point"
+fi
+
+# Verifica as permissões atuais
+permissions=$(stat -c "%a" "$mount_point")
+
+# Converte as permissões para um número inteiro
+desired_permissions=777
+
+if [ "$permissions" -eq "$desired_permissions" ]; then
+    echo "As permissões em $mount_point já estão definidas como $desired_permissions."
+else
+    # Concede permissões de leitura, escrita e execução recursivamente
+    echo "Alterando permissões em $mount_point..."
+    sudo chmod -R 777 "$mount_point"
+
+    # Confirmação
+    echo "Permissões alteradas para leitura, escrita e execução em: $mount_point"
+fi

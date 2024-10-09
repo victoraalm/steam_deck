@@ -1,0 +1,59 @@
+#!/bin/bash
+
+# Verifica se o script está rodando em um terminal
+if [ -z "$KONSOLE_DBUS_SESSION" ]; then
+    # Se não estiver, abre um novo terminal e executa o script nele
+    echo "Abrindo um novo terminal para execução do script..."
+    konsole --hold -e bash -c "$0"
+    exit 0
+fi
+
+# A partir daqui, o script está rodando dentro de um terminal
+
+# Define variáveis
+PODMAN_URL="https://github.com/containers/podman-launcher/releases/latest/download/podman-launcher"
+DESTINATION="$HOME/.local/bin/podman"
+
+# Verifica se o diretório ~/.local/bin existe, se não, cria
+if [ ! -d "$HOME/.local/bin" ]; then
+    mkdir -p "$HOME/.local/bin"
+    echo "Criado o diretório ~/.local/bin."
+fi
+
+# 1. Verifica se o podman já foi baixado e renomeado
+if [ -f "$DESTINATION" ]; then
+    echo "O arquivo $DESTINATION já existe. Pulando download."
+else
+    # Faz o download do podman-launcher
+    echo "Baixando o podman-launcher..."
+    curl -L "$PODMAN_URL" -o "$DESTINATION"
+    echo "Download concluído e salvo em $DESTINATION."
+fi
+
+# 2. Verifica se o podman é executável
+if [ ! -x "$DESTINATION" ]; then
+    echo "Tornando $DESTINATION executável..."
+    chmod +x "$DESTINATION"
+    echo "Permissão de execução concedida a $DESTINATION."
+else
+    echo "$DESTINATION já é executável. Pulando alteração de permissões."
+fi
+
+# 3. Verifica se a senha do usuário 'deck' já foi configurada
+if [ -z "$(sudo grep deck /etc/shadow | cut -d: -f2)" ]; then
+    echo "Por favor, configure a senha do usuário 'deck' usando o comando 'passwd deck'."
+else
+    echo "Senha do usuário 'deck' já configurada. Pulando configuração de senha."
+fi
+
+# 4. Verifica se o uidmap já foi configurado
+if grep -q "^deck:" /etc/subuid && grep -q "^deck:" /etc/subgid; then
+    echo "O uidmap do usuário 'deck' já está configurado. Pulando configuração."
+else
+    echo "Configurando uidmap para o usuário 'deck'..."
+    sudo touch /etc/subuid /etc/subgid
+    sudo usermod --add-subuid 100000-165535 --add-subgid 100000-165535 deck
+    echo "Uidmap configurado para o usuário 'deck'."
+fi
+
+echo "Todas as etapas foram verificadas e concluídas."
