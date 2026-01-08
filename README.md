@@ -1,4 +1,4 @@
-# steam_deck
+# Steam_Deck
 Repositório para ajudar quem tem Steam Deck e quer usar o modo desktop.
 
 # Códigos
