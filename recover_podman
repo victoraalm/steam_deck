@@ -5,6 +5,7 @@
 # ==============================================================================
 # Objetivo: Destravar containers com status "Stopping", "Improper" ou zumbis.
 # Segurança: NUNCA executa 'podman rm'. Seus dados/containers estão seguros.
+# Atualização: Verifica e solicita criação de senha sudo se necessário.
 # ==============================================================================
 
 # Definição de Cores para facilitar a leitura
@@ -24,6 +25,33 @@ echo -e "${YELLOW}   INICIANDO VERIFICAÇÃO DE SAÚDE DO PODMAN (SEM DELEÇÃO)
 echo -e "${YELLOW}=============================================================${NC}"
 
 # ------------------------------------------------------------------------------
+# FASE 0: VERIFICAÇÃO DE PERMISSÕES (NOVO)
+# ------------------------------------------------------------------------------
+log_info "FASE 0: Verificando requisitos de administrador..."
+
+# Verifica o status da senha do usuário atual
+# NP = No Password (Sem senha), P = Password (Com senha), L = Locked
+PASS_STATUS=$(passwd -S $(whoami) | awk '{print $2}')
+
+if [ "$PASS_STATUS" == "NP" ]; then
+    echo -e "${RED}ERRO: O usuário 'deck' não possui uma senha definida.${NC}"
+    log_warn "Para realizar a limpeza profunda (se necessária), o script precisa de permissão 'sudo'."
+    echo -e "${YELLOW}Vamos definir uma senha agora.${NC}"
+    echo "Digite uma senha segura e pressione Enter (ela não aparecerá na tela):"
+    
+    passwd
+    
+    # Verifica se o comando passwd foi bem sucedido
+    if [ $? -ne 0 ]; then
+        log_error "Falha ao definir a senha. O script será encerrado."
+        exit 1
+    fi
+    log_success "Senha definida com sucesso! Continuando..."
+else
+    log_success "Usuário possui senha definida. Permissões ok."
+fi
+
+# ------------------------------------------------------------------------------
 # FASE 1: DIAGNÓSTICO E COLETA DE DADOS
 # ------------------------------------------------------------------------------
 log_info "FASE 1: Coletando informações do sistema e do Podman..."
@@ -38,32 +66,28 @@ else
 fi
 
 # 2. Identificar onde o Podman guarda os arquivos temporários (O "RunRoot")
-# Isso é crucial para saber qual pasta limpar na Fase 3 se necessário.
 log_info "Identificando diretórios de execução (RunRoot) via 'podman info'..."
 
-# Captura o caminho exato do RunRoot
 RUN_ROOT=$(podman info --format '{{.Store.RunRoot}}')
 
-# Fallback: Se o comando acima falhar (comum se o podman estiver muito quebrado),
-# assumimos o padrão do Steam Deck para podman estático.
+# Fallback para Steam Deck
 if [ -z "$RUN_ROOT" ]; then
     log_warn "Não foi possível ler o RunRoot via comando. Assumindo padrão do Steam Deck."
-    RUN_ROOT="/var/tmp/podman-static/1000" # 1000 é o UID padrão do usuário 'deck'
+    RUN_ROOT="/var/tmp/podman-static/1000"
 fi
 
 log_info "Diretório de arquivos temporários identificado: $RUN_ROOT"
 
-# 3. Rodar debug completo para log (apenas para registro, conforme solicitado)
+# 3. Rodar debug
 log_info "Gerando log de debug (podman info --debug)..."
 podman info --debug > podman_debug_log.txt 2>&1
-log_success "Log de debug salvo em 'podman_debug_log.txt' para análise futura."
+log_success "Log de debug salvo em 'podman_debug_log.txt'."
 
 # ------------------------------------------------------------------------------
 # FASE 2: VERIFICAÇÃO DE STATUS E TENTATIVA DE PARADA GENTIL
 # ------------------------------------------------------------------------------
 log_info "FASE 2: Verificando estado dos containers..."
 
-# Lista todos os containers e pega IDs e Status
 CONTAINERS=$(podman ps -a --format "{{.ID}} {{.Names}} {{.Status}}")
 
 if [ -z "$CONTAINERS" ]; then
@@ -75,16 +99,13 @@ echo -e "\nContainers encontrados:"
 echo "$CONTAINERS"
 echo ""
 
-# Variável de controle para saber se precisamos da limpeza pesada
 PRECISA_LIMPEZA=0
 
-# Loop linha a linha para verificar cada container
 while IFS= read -r line; do
     CID=$(echo $line | awk '{print $1}')
     NAME=$(echo $line | awk '{print $2}')
-    STATUS=$(echo $line | awk '{$1=""; $2=""; print $0}' | xargs) # Resto da linha é o status
+    STATUS=$(echo $line | awk '{$1=""; $2=""; print $0}' | xargs)
 
-    # Verifica palavras-chave de problema
     if [[ "$STATUS" == *"Stopping"* ]] || [[ "$STATUS" == *"Improper"* ]] || [[ "$STATUS" == *"Error"* ]]; then
         log_error "Container $NAME ($CID) está com status problemático: $STATUS"
         PRECISA_LIMPEZA=1
@@ -111,42 +132,36 @@ if [ $PRECISA_LIMPEZA -eq 1 ]; then
     echo -e "\n${RED}=============================================================${NC}"
     echo -e "${RED}   DETECTADO BLOQUEIO NO PODMAN - INICIANDO LIMPEZA FORÇADA   ${NC}"
     echo -e "${RED}=============================================================${NC}"
-    log_warn "Problemas detectados (Status Improper, Stopping travado ou falha ao parar)."
-    log_info "Aplicando correção: Matar processos e limpar arquivos temporários ($RUN_ROOT)."
-
-    # 1. Matar processos
-    log_info "Passo 3.1: Matando processos do Podman e Crun..."
+    log_warn "Problemas detectados. Iniciando limpeza profunda..."
+    
+    # Matar processos
+    log_info "Passo 3.1: Matando processos travados (podman/crun/conmon)..."
     pkill -9 podman 2>/dev/null
-    if [ $? -eq 0 ]; then log_success "Processos 'podman' encerrados."; else log_info "Nenhum processo 'podman' ativo encontrado."; fi
-    
     pkill -9 crun 2>/dev/null
-    if [ $? -eq 0 ]; then log_success "Processos 'crun' encerrados."; else log_info "Nenhum processo 'crun' ativo encontrado."; fi
-    
-    # Segurança extra: matar conmon (monitor de container)
     pkill -9 conmon 2>/dev/null
-
-    # 2. Limpar a sujeira (Arquivos de trava/socket)
+    
+    # Limpar a sujeira (AQUI USA SUDO)
     log_info "Passo 3.2: Removendo arquivos temporários de estado em: $RUN_ROOT"
     
     if [ -d "$RUN_ROOT" ]; then
-        # Usamos sudo aqui porque arquivos de socket as vezes ficam com permissão de root/sistema
-        log_warn "Solicitando permissão de administrador (sudo) para garantir limpeza total..."
+        log_warn "Solicitando permissão de administrador (sudo) para limpeza..."
+        # Como já garantimos a senha na Fase 0, o usuário saberá o que digitar
         sudo rm -rf "$RUN_ROOT"
         
         if [ $? -eq 0 ]; then
             log_success "Diretório temporário limpo com sucesso."
         else
-            log_error "Falha ao limpar $RUN_ROOT. Verifique sua senha de sudo."
+            log_error "Falha ao limpar $RUN_ROOT. Verifique se digitou a senha correta."
             exit 1
         fi
     else
         log_warn "O diretório $RUN_ROOT não existe ou já foi limpo."
     fi
 
-    log_success "Limpeza cirúrgica concluída. O Podman teve sua 'memória de curto prazo' reiniciada."
+    log_success "Limpeza concluída. O Podman foi reiniciado."
 
 else
-    log_success "Todos os containers responderam bem ou já estavam parados. Nenhuma limpeza forçada necessária."
+    log_success "Todos os containers estão saudáveis. Nenhuma limpeza necessária."
 fi
 
 # ------------------------------------------------------------------------------
@@ -156,7 +171,5 @@ echo -e "\n${YELLOW}============================================================
 echo -e "${YELLOW}                  STATUS FINAL DO SISTEMA                    ${NC}"
 echo -e "${YELLOW}=============================================================${NC}"
 
-log_info "Listando containers disponíveis (verificando se ainda existem)..."
 podman ps -a
-
-echo -e "\n${GREEN}Concluído.${NC} Tente iniciar seu container agora (ex: distrobox enter nome)."
+echo -e "\n${GREEN}Concluído.${NC}"
