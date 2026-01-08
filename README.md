@@ -8,5 +8,5 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/victoraalm/steam_deck/re
 ```
 Recuperar/destravar podman (geralmente após atualizações da steamos)
 ```sh
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/victoraalm/steam_deck/refs/heads/main/setup_podman)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/victoraalm/steam_deck/refs/heads/main/recover_podman)"
 ```
