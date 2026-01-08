@@ -1,135 +1,162 @@
 #!/bin/bash
 
-# ==========================================
-# SCRIPT DE CORREÇÃO AUTOMÁTICA DO PODMAN
-# ==========================================
-# Baseado no diagnóstico: "Improper State" pós-update SteamOS
-# OBJETIVO: Destravar containers sem deletar dados.
+# ==============================================================================
+# SCRIPT DE DIAGNÓSTICO E RECUPERAÇÃO DO PODMAN (STEAM DECK / DISTROBOX)
+# ==============================================================================
+# Objetivo: Destravar containers com status "Stopping", "Improper" ou zumbis.
+# Segurança: NUNCA executa 'podman rm'. Seus dados/containers estão seguros.
+# ==============================================================================
 
-# --- Configuração de Cores ---
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
+# Definição de Cores para facilitar a leitura
 RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# --- Funções de Log ---
-log() { echo -e "${CYAN}[INFO]${NC} $1"; }
-warn() { echo -e "${YELLOW}[AVISO]${NC} $1"; }
-success() { echo -e "${GREEN}[OK]${NC} $1"; }
-error() { echo -e "${RED}[ERRO]${NC} $1"; }
+log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+log_success() { echo -e "${GREEN}[SUCESSO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[ATENÇÃO]${NC} $1"; }
+log_error() { echo -e "${RED}[ERRO]${NC} $1"; }
 
-echo -e "${YELLOW}====================================================${NC}"
-echo -e "${YELLOW}   REPARADOR DE ESTADO DO PODMAN (STEAM DECK)       ${NC}"
-echo -e "${YELLOW}====================================================${NC}"
-echo -e "${RED}NOTA: NENHUM container será deletado durante este processo.${NC}"
-echo -e "O objetivo é apenas destravar processos e arquivos temporários.\n"
+echo -e "${YELLOW}=============================================================${NC}"
+echo -e "${YELLOW}   INICIANDO VERIFICAÇÃO DE SAÚDE DO PODMAN (SEM DELEÇÃO)    ${NC}"
+echo -e "${YELLOW}=============================================================${NC}"
 
-# ----------------------------------------------------------------------
-# FASE 0: Verificação Inicial
-# ----------------------------------------------------------------------
-log "Iniciando diagnóstico..."
+# ------------------------------------------------------------------------------
+# FASE 1: DIAGNÓSTICO E COLETA DE DADOS
+# ------------------------------------------------------------------------------
+log_info "FASE 1: Coletando informações do sistema e do Podman..."
 
-# Verifica se o podman está acessível
-if ! command -v podman &> /dev/null; then
-    warn "Comando 'podman' não encontrado no PATH padrão."
-    warn "Tentando encontrar no local estático..."
-    if [ -f "$HOME/.local/bin/podman" ]; then
-        export PATH="$HOME/.local/bin:$PATH"
-        success "Podman encontrado em ~/.local/bin"
-    else
-        error "Podman não encontrado. O script não pode continuar."
-        exit 1
-    fi
+# 1. Tenta rodar o system migrate preventivamente (banco de dados)
+log_info "Executando 'podman system migrate' para alinhar banco de dados..."
+podman system migrate
+if [ $? -eq 0 ]; then
+    log_success "Migração de banco de dados verificada."
+else
+    log_warn "A migração retornou um erro, mas continuaremos a análise."
 fi
 
-# Lista containers atuais (apenas para log visual)
-log "Listando containers detectados (Estado Atual):"
-podman ps -a --format "table {{.ID}}\t{{.Names}}\t{{.Status}}"
+# 2. Identificar onde o Podman guarda os arquivos temporários (O "RunRoot")
+# Isso é crucial para saber qual pasta limpar na Fase 3 se necessário.
+log_info "Identificando diretórios de execução (RunRoot) via 'podman info'..."
+
+# Captura o caminho exato do RunRoot
+RUN_ROOT=$(podman info --format '{{.Store.RunRoot}}')
+
+# Fallback: Se o comando acima falhar (comum se o podman estiver muito quebrado),
+# assumimos o padrão do Steam Deck para podman estático.
+if [ -z "$RUN_ROOT" ]; then
+    log_warn "Não foi possível ler o RunRoot via comando. Assumindo padrão do Steam Deck."
+    RUN_ROOT="/var/tmp/podman-static/1000" # 1000 é o UID padrão do usuário 'deck'
+fi
+
+log_info "Diretório de arquivos temporários identificado: $RUN_ROOT"
+
+# 3. Rodar debug completo para log (apenas para registro, conforme solicitado)
+log_info "Gerando log de debug (podman info --debug)..."
+podman info --debug > podman_debug_log.txt 2>&1
+log_success "Log de debug salvo em 'podman_debug_log.txt' para análise futura."
+
+# ------------------------------------------------------------------------------
+# FASE 2: VERIFICAÇÃO DE STATUS E TENTATIVA DE PARADA GENTIL
+# ------------------------------------------------------------------------------
+log_info "FASE 2: Verificando estado dos containers..."
+
+# Lista todos os containers e pega IDs e Status
+CONTAINERS=$(podman ps -a --format "{{.ID}} {{.Names}} {{.Status}}")
+
+if [ -z "$CONTAINERS" ]; then
+    log_success "Nenhum container encontrado. Nada a corrigir."
+    exit 0
+fi
+
+echo -e "\nContainers encontrados:"
+echo "$CONTAINERS"
 echo ""
 
-# ----------------------------------------------------------------------
-# FASE 1: Migração e Atualização do Banco de Dados
-# ----------------------------------------------------------------------
-log "FASE 1: Executando migração de sistema (podman system migrate)..."
-echo "   -> Isso alinha o banco de dados interno com a versão atual do software."
+# Variável de controle para saber se precisamos da limpeza pesada
+PRECISA_LIMPEZA=0
 
-if podman system migrate; then
-    success "Migração executada com sucesso."
-else
-    warn "A migração retornou um aviso (isso é comum se o Podman estiver travado)."
-fi
+# Loop linha a linha para verificar cada container
+while IFS= read -r line; do
+    CID=$(echo $line | awk '{print $1}')
+    NAME=$(echo $line | awk '{print $2}')
+    STATUS=$(echo $line | awk '{$1=""; $2=""; print $0}' | xargs) # Resto da linha é o status
 
-# ----------------------------------------------------------------------
-# FASE 2: Limpeza de Processos Zumbis (A Solução Cirúrgica)
-# ----------------------------------------------------------------------
-log "FASE 2: Verificando processos travados..."
-
-# Mata processos do podman
-if pgrep -x "podman" > /dev/null; then
-    warn "Processos 'podman' encontrados rodando em segundo plano. Encerrando..."
-    pkill -9 podman
-    success "Processos 'podman' encerrados."
-else
-    log "Nenhum processo 'podman' travado encontrado."
-fi
-
-# Mata processos do crun (o criador de containers)
-if pgrep -x "crun" > /dev/null; then
-    warn "Processos 'crun' (runtime) encontrados. Isso geralmente causa o erro 'Improper State'."
-    pkill -9 crun
-    success "Processos 'crun' encerrados."
-else
-    log "Nenhum processo 'crun' travado encontrado."
-fi
-
-# ----------------------------------------------------------------------
-# FASE 3: Remoção de Arquivos Temporários de Trava
-# ----------------------------------------------------------------------
-log "FASE 3: Limpando arquivos de estado temporário (/var/tmp)..."
-echo "   -> Este é o passo crítico para corrigir o erro 'Container state improper'."
-
-# Caminho específico da instalação estática no Steam Deck
-LOCK_DIR="/var/tmp/podman-static/1000"
-
-if [ -d "$LOCK_DIR" ]; then
-    log "Pasta de trava encontrada: $LOCK_DIR"
-    
-    # Tenta remover sem sudo primeiro (já que é user 1000)
-    if rm -rf "$LOCK_DIR"; then
-        success "Pasta de estado limpa com sucesso!"
-    else
-        warn "Falha ao limpar com permissão normal. Tentando com sudo..."
-        if sudo rm -rf "$LOCK_DIR"; then
-            success "Pasta de estado limpa com SUDO."
+    # Verifica palavras-chave de problema
+    if [[ "$STATUS" == *"Stopping"* ]] || [[ "$STATUS" == *"Improper"* ]] || [[ "$STATUS" == *"Error"* ]]; then
+        log_error "Container $NAME ($CID) está com status problemático: $STATUS"
+        PRECISA_LIMPEZA=1
+    elif [[ "$STATUS" == *"Up"* ]]; then
+        log_info "Container $NAME ($CID) está rodando. Tentando parar gentilmente..."
+        podman stop -t 5 "$CID" 2>/dev/null
+        
+        if [ $? -eq 0 ]; then
+            log_success "Container $NAME parado com sucesso."
         else
-            error "Não foi possível limpar a pasta $LOCK_DIR. Verifique permissões."
+            log_warn "Falha ao parar $NAME gentilmente. Provavelmente travado."
+            PRECISA_LIMPEZA=1
         fi
+    else
+        log_info "Container $NAME ($CID) está parado ou em estado desconhecido ($STATUS)."
     fi
-else
-    log "A pasta $LOCK_DIR não existe. O sistema parece já estar limpo."
-fi
+done <<< "$CONTAINERS"
 
-# ----------------------------------------------------------------------
-# FASE 4: Verificação Final e Teste de Vida
-# ----------------------------------------------------------------------
-echo ""
-log "FASE 4: Diagnóstico Final..."
-log "Tentando ler a lista de containers novamente para confirmar o destravamento."
+# ------------------------------------------------------------------------------
+# FASE 3: A SOLUÇÃO CIRÚRGICA (Se necessário)
+# ------------------------------------------------------------------------------
 
-# Captura a saída para verificar se dá erro
-OUTPUT=$(podman ps -a 2>&1)
-EXIT_CODE=$?
+if [ $PRECISA_LIMPEZA -eq 1 ]; then
+    echo -e "\n${RED}=============================================================${NC}"
+    echo -e "${RED}   DETECTADO BLOQUEIO NO PODMAN - INICIANDO LIMPEZA FORÇADA   ${NC}"
+    echo -e "${RED}=============================================================${NC}"
+    log_warn "Problemas detectados (Status Improper, Stopping travado ou falha ao parar)."
+    log_info "Aplicando correção: Matar processos e limpar arquivos temporários ($RUN_ROOT)."
 
-if [ $EXIT_CODE -eq 0 ]; then
-    success "O Podman está respondendo corretamente!"
-    echo -e "\n${GREEN}=== STATUS DOS SEUS CONTAINERS ===${NC}"
-    podman ps -a --format "table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.State}}"
+    # 1. Matar processos
+    log_info "Passo 3.1: Matando processos do Podman e Crun..."
+    pkill -9 podman 2>/dev/null
+    if [ $? -eq 0 ]; then log_success "Processos 'podman' encerrados."; else log_info "Nenhum processo 'podman' ativo encontrado."; fi
     
-    echo ""
-    echo -e "${CYAN}DICA:${NC} Se algum container estiver com Status 'Exited' ou 'Stopped',"
-    echo -e "você pode tentar iniciá-lo agora com: ${YELLOW}distrobox enter <nome>${NC}"
+    pkill -9 crun 2>/dev/null
+    if [ $? -eq 0 ]; then log_success "Processos 'crun' encerrados."; else log_info "Nenhum processo 'crun' ativo encontrado."; fi
+    
+    # Segurança extra: matar conmon (monitor de container)
+    pkill -9 conmon 2>/dev/null
+
+    # 2. Limpar a sujeira (Arquivos de trava/socket)
+    log_info "Passo 3.2: Removendo arquivos temporários de estado em: $RUN_ROOT"
+    
+    if [ -d "$RUN_ROOT" ]; then
+        # Usamos sudo aqui porque arquivos de socket as vezes ficam com permissão de root/sistema
+        log_warn "Solicitando permissão de administrador (sudo) para garantir limpeza total..."
+        sudo rm -rf "$RUN_ROOT"
+        
+        if [ $? -eq 0 ]; then
+            log_success "Diretório temporário limpo com sucesso."
+        else
+            log_error "Falha ao limpar $RUN_ROOT. Verifique sua senha de sudo."
+            exit 1
+        fi
+    else
+        log_warn "O diretório $RUN_ROOT não existe ou já foi limpo."
+    fi
+
+    log_success "Limpeza cirúrgica concluída. O Podman teve sua 'memória de curto prazo' reiniciada."
+
 else
-    error "O Podman ainda parece estar com problemas."
-    echo "Erro retornado: $OUTPUT"
+    log_success "Todos os containers responderam bem ou já estavam parados. Nenhuma limpeza forçada necessária."
 fi
+
+# ------------------------------------------------------------------------------
+# FASE 4: VERIFICAÇÃO FINAL
+# ------------------------------------------------------------------------------
+echo -e "\n${YELLOW}=============================================================${NC}"
+echo -e "${YELLOW}                  STATUS FINAL DO SISTEMA                    ${NC}"
+echo -e "${YELLOW}=============================================================${NC}"
+
+log_info "Listando containers disponíveis (verificando se ainda existem)..."
+podman ps -a
+
+echo -e "\n${GREEN}Concluído.${NC} Tente iniciar seu container agora (ex: distrobox enter nome)."
