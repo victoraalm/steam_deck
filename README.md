@@ -6,3 +6,7 @@ Configurar rápidamente uma distro arch:
 ```sh
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/victoraalm/steam_deck/refs/heads/main/setup_distroArch)"
 ```
+Recuperar/destravar podman (geralmente após atualizações da steamos)
+```sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/victoraalm/steam_deck/refs/heads/main/setup_podman)"
+```
