@@ -1,203 +1,161 @@
 #!/bin/bash
 
 # ==============================================================================
-# SCRIPT DE INSTALAÇÃO PERMANENTE DISTROBOX + PODMAN (STEAM DECK >= 3.5)
+# SMART INSTALLER: DISTROBOX + PODMAN (STEAM DECK)
 # ==============================================================================
-# Autor: Gemini (Baseado nas instruções do usuário)
-# Funcionalidade: Instalação, Configuração de PATH, Correção de Permissões
-# e Verificação de duplicidade.
+# Lógica: Verifica versões remotas (GitHub) e compara com as locais.
+# Ação: Só baixa/instala se a versão remota for mais nova ou se não existir.
 # ==============================================================================
 
-# Cores para logs
+# Cores e Formatação
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-# Variáveis de Estado para o Resumo
-STATUS_PATH="Pular (Já configurado)"
-STATUS_DB_INSTALL="Pular (Já instalado)"
-STATUS_DB_CONF="Pular (Já configurado)"
-STATUS_PODMAN="Pular (Já instalado)"
-STATUS_SUBUID="Pular (Já configurado)"
-STATUS_ICONS="Ok"
+NC='\033[0m'
+BOLD='\033[1m'
 
 log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_success() { echo -e "${GREEN}[SUCESSO]${NC} $1"; }
-log_skip() { echo -e "${YELLOW}[PULANDO]${NC} $1"; }
-log_error() { echo -e "${RED}[ERRO]${NC} $1"; }
+log_success() { echo -e "${GREEN}[OK]${NC} $1"; }
+log_skip() { echo -e "${YELLOW}[PULAR]${NC} $1"; }
+log_act() { echo -e "${GREEN}${BOLD}[AÇÃO]${NC} $1"; }
 
 echo -e "${YELLOW}=============================================================${NC}"
-echo -e "${YELLOW}   INSTALAÇÃO DISTROBOX & PODMAN (STEAM DECK)                ${NC}"
+echo -e "${YELLOW}   VERIFICAÇÃO INTELIGENTE: DISTROBOX & PODMAN               ${NC}"
 echo -e "${YELLOW}=============================================================${NC}"
-echo "Nota: Algumas etapas podem pedir sua senha de sudo (admin)."
-echo ""
 
 # ------------------------------------------------------------------------------
-# 1. Configurar $PATH no .bashrc
+# 1. VERIFICAÇÃO DE SENHA (SUDO) - Requisito obrigatório
 # ------------------------------------------------------------------------------
-log_info "Passo 1: Verificando configuração do \$PATH em ~/.bashrc..."
+log_info "Passo 1/6: Verificando status da senha..."
+PASS_STATUS=$(passwd -S $(whoami) | awk '{print $2}')
 
+if [ "$PASS_STATUS" == "NP" ]; then
+    echo -e "${RED}ERRO: Senha de usuário não definida.${NC}"
+    echo -e "${YELLOW}Defina uma senha agora para permitir configurações do sistema:${NC}"
+    passwd
+    if [ $? -ne 0 ]; then echo -e "${RED}Senha não criada. Abortando.${NC}"; exit 1; fi
+else
+    log_skip "Senha já definida."
+fi
+
+# ------------------------------------------------------------------------------
+# 2. CONFIGURAÇÃO DO PATH
+# ------------------------------------------------------------------------------
+log_info "Passo 2/6: Verificando variáveis de ambiente (PATH)..."
 BASHRC="$HOME/.bashrc"
 PATH_LINE="export PATH=/home/deck/.local/bin:\$PATH"
+mkdir -p "$HOME/.local/bin"
 
 if grep -Fxq "$PATH_LINE" "$BASHRC"; then
-    log_skip "O PATH já está configurado no .bashrc."
+    log_skip "PATH já configurado em .bashrc."
 else
-    log_info "Adicionando diretório .local/bin ao PATH..."
+    log_act "Adicionando PATH ao .bashrc..."
     echo "" >> "$BASHRC"
     echo "$PATH_LINE" >> "$BASHRC"
-    STATUS_PATH="Atualizado"
-    log_success "Linha adicionada ao final do .bashrc."
+fi
+export PATH=$HOME/.local/bin:$PATH
+
+# ------------------------------------------------------------------------------
+# 3. DISTROBOX (Verificação de Versão)
+# ------------------------------------------------------------------------------
+log_info "Passo 3/6: Verificando Distrobox..."
+
+# Verifica versão instalada
+if command -v distrobox >/dev/null; then
+    DB_LOCAL_VER=$(distrobox --version | awk '{print $2}')
+else
+    DB_LOCAL_VER="0"
 fi
 
-# Recarrega o path para a sessão atual do script apenas para garantir
-export PATH=/home/deck/.local/bin:$PATH
+# Verifica versão remota (GitHub API)
+DB_REMOTE_VER=$(curl -s https://api.github.com/repos/89luca89/distrobox/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
 
-# ------------------------------------------------------------------------------
-# 2. Instalar Distrobox
-# ------------------------------------------------------------------------------
-log_info "Passo 2: Verificando instalação do Distrobox..."
-
-if [ -f "$HOME/.local/bin/distrobox" ]; then
-    log_skip "Distrobox já encontrado em ~/.local/bin."
+if [ "$DB_LOCAL_VER" == "$DB_REMOTE_VER" ]; then
+    log_skip "Distrobox já está na última versão ($DB_LOCAL_VER)."
+    
+    # Verifica configs mesmo se versão for igual
+    if [ ! -s "$HOME/.distroboxrc" ]; then
+        log_act "Recriando .distroboxrc ausente..."
+        printf "xhost +si:localuser:\$USER >/dev/null\nexport PIPEWIRE_RUNTIME_DIR=/dev/null\nexport PATH=/home/deck/.local/bin:\$PATH\nexport PATH=\$PATH:/home/deck/.local/bin\n" > "$HOME/.distroboxrc"
+    fi
 else
-    log_info "Baixando e instalando Distrobox..."
+    log_act "Atualizando Distrobox ($DB_LOCAL_VER -> $DB_REMOTE_VER)..."
     curl -s https://raw.githubusercontent.com/89luca89/distrobox/main/install | sh -s -- --prefix $HOME/.local
-    STATUS_DB_INSTALL="Instalado com sucesso"
-    log_success "Distrobox instalado."
-fi
-
-# 2.1 Configurar .distroboxrc
-log_info "Passo 2.1: Verificando configuração ~/.distroboxrc..."
-DBRC="$HOME/.distroboxrc"
-
-# Verifica se o arquivo existe. Se não existir, cria com o conteúdo correto.
-# Se existir, vamos assumir que o usuário já mexeu e não vamos sobrescrever para não quebrar configs pessoais,
-# a menos que esteja vazio.
-if [ ! -s "$DBRC" ]; then
-    log_info "Criando arquivo de configuração .distroboxrc..."
-    cat <<EOF > "$DBRC"
-# Ensure the graphical apps can talk to the Xwayland session
-xhost +si:localuser:\$USER >/dev/null
-
-# Force the use of pulseaudio inside the container
-export PIPEWIRE_RUNTIME_DIR=/dev/null
-
-# Needed to ensure distrobox can find the podman binary we previously downloaded
-export PATH=/home/deck/.local/bin:\$PATH
-export PATH=\$PATH:/home/deck/.local/bin
-EOF
-    STATUS_DB_CONF="Criado"
-    log_success "Arquivo .distroboxrc criado."
-else
-    log_skip "Arquivo .distroboxrc já existe. Mantendo original."
-fi
-
-# ------------------------------------------------------------------------------
-# 3. Instalar Podman (Launcher Estático)
-# ------------------------------------------------------------------------------
-log_info "Passo 3: Verificando instalação do Podman..."
-
-PODMAN_BIN="$HOME/.local/bin/podman"
-
-if [ -f "$PODMAN_BIN" ]; then
-    log_skip "Podman já instalado em $PODMAN_BIN."
-else
-    log_info "Baixando Podman Launcher (v0.0.5)..."
-    # Cria diretório bin se não existir
-    mkdir -p "$HOME/.local/bin"
     
-    # Baixa direto para o destino (evita mover do Downloads)
-    curl -L -o "$PODMAN_BIN" https://github.com/89luca89/podman-launcher/releases/download/v0.0.5/podman-launcher-amd64
-    
-    log_info "Tornando executável..."
-    chmod +x "$PODMAN_BIN"
-    STATUS_PODMAN="Instalado"
-    log_success "Podman instalado e configurado."
-fi
-
-# ------------------------------------------------------------------------------
-# 3.1 Configurar UID/GID Mapping (Requer Sudo)
-# ------------------------------------------------------------------------------
-log_info "Passo 3.1: Verificando mapeamento de usuários (subuid/subgid)..."
-
-# Verifica se o usuário 'deck' já está nos arquivos
-HAS_SUBUID=$(grep -c "^deck:" /etc/subuid 2>/dev/null)
-HAS_SUBGID=$(grep -c "^deck:" /etc/subgid 2>/dev/null)
-
-if [ "$HAS_SUBUID" -gt 0 ] && [ "$HAS_SUBGID" -gt 0 ]; then
-    log_skip "Mapeamento de UID/GID para 'deck' já existe."
-else
-    log_info "Configurando subuid/subgid. ${YELLOW}SENHA DE ADMIN NECESSÁRIA AGORA:${NC}"
-    
-    # Garante que os arquivos existem
-    sudo touch /etc/subuid /etc/subgid
-    
-    # Adiciona o mapeamento
-    sudo usermod --add-subuid 100000-165535 --add-subgid 100000-165535 deck
-    
-    if [ $? -eq 0 ]; then
-        STATUS_SUBUID="Configurado"
-        log_success "Mapeamento realizado."
-    else
-        STATUS_SUBUID="Falha (Erro no sudo)"
-        log_error "Falha ao configurar usermod."
+    # Garante criação do .distroboxrc na instalação
+    if [ ! -s "$HOME/.distroboxrc" ]; then
+        printf "xhost +si:localuser:\$USER >/dev/null\nexport PIPEWIRE_RUNTIME_DIR=/dev/null\nexport PATH=/home/deck/.local/bin:\$PATH\nexport PATH=\$PATH:/home/deck/.local/bin\n" > "$HOME/.distroboxrc"
     fi
 fi
 
 # ------------------------------------------------------------------------------
-# 4. Configurar Permissões de Ícones
+# 4. PODMAN LAUNCHER (Verificação de Versão via Recibo)
 # ------------------------------------------------------------------------------
-log_info "Passo 4: Verificando pasta de ícones..."
-ICON_DIR="/home/deck/.local/share/icons"
+log_info "Passo 4/6: Verificando Podman Launcher..."
+PODMAN_BIN="$HOME/.local/bin/podman"
+VERSION_FILE="$HOME/.local/bin/.podman_installed_tag"
 
-if [ ! -d "$ICON_DIR" ]; then
-    mkdir -p "$ICON_DIR"
-    log_info "Pasta de ícones criada."
+# Obtém Tag Remota (Redirecionamento do GitHub)
+PM_LATEST_URL=$(curl -Ls -o /dev/null -w %{url_effective} https://github.com/89luca89/podman-launcher/releases/latest)
+PM_REMOTE_TAG=$(echo $PM_LATEST_URL | grep -o 'v[0-9]*\.[0-9]*\.[0-9]*')
+
+# Obtém Tag Local (se existir)
+if [ -f "$VERSION_FILE" ] && [ -f "$PODMAN_BIN" ]; then
+    PM_LOCAL_TAG=$(cat "$VERSION_FILE")
+else
+    PM_LOCAL_TAG="none"
 fi
 
-# Tenta mudar a propriedade. Se falhar (ex: pasta é root), pede sudo.
-if chown deck:deck "$ICON_DIR" 2>/dev/null; then
-    log_success "Permissões de ícones corretas."
+if [ "$PM_LOCAL_TAG" == "$PM_REMOTE_TAG" ]; then
+    log_skip "Podman já está na última versão ($PM_LOCAL_TAG)."
 else
-    log_info "Ajustando permissões da pasta de ícones (pode pedir senha)..."
+    log_act "Instalando/Atualizando Podman ($PM_LOCAL_TAG -> $PM_REMOTE_TAG)..."
+    DOWNLOAD_URL="https://github.com/89luca89/podman-launcher/releases/download/${PM_REMOTE_TAG}/podman-launcher-amd64"
+    
+    curl -L -o "$PODMAN_BIN" "$DOWNLOAD_URL"
+    chmod +x "$PODMAN_BIN"
+    
+    # Salva o recibo da versão para a próxima verificação
+    echo "$PM_REMOTE_TAG" > "$VERSION_FILE"
+    log_success "Podman atualizado."
+fi
+
+# ------------------------------------------------------------------------------
+# 5. CONFIGURAÇÃO DE PERMISSÕES (SUBUID/GID)
+# ------------------------------------------------------------------------------
+log_info "Passo 5/6: Verificando mapeamento de usuários..."
+
+HAS_SUBUID=$(grep -c "^deck:" /etc/subuid 2>/dev/null)
+if [ "$HAS_SUBUID" -gt 0 ]; then
+    log_skip "Mapeamento subuid/subgid já configurado."
+else
+    log_act "Configurando mapeamento (Necessário senha sudo)..."
+    sudo touch /etc/subuid /etc/subgid
+    sudo usermod --add-subuid 100000-165535 --add-subgid 100000-165535 deck
+fi
+
+# ------------------------------------------------------------------------------
+# 6. ÍCONES E PERMISSÕES FINAIS
+# ------------------------------------------------------------------------------
+log_info "Passo 6/6: Verificando pasta de ícones..."
+ICON_DIR="$HOME/.local/share/icons"
+mkdir -p "$ICON_DIR"
+
+if [ -O "$ICON_DIR" ]; then
+    log_skip "Permissões de ícones corretas."
+else
+    log_act "Corrigindo dono da pasta de ícones..."
     sudo chown deck:deck "$ICON_DIR"
-    log_success "Permissões ajustadas."
 fi
 
 # ------------------------------------------------------------------------------
-# 5. Verificação e Resumo
+# RESUMO
 # ------------------------------------------------------------------------------
 echo ""
-echo -e "${YELLOW}=============================================================${NC}"
-echo -e "${YELLOW}                 RELATÓRIO FINAL DA OPERAÇÃO                 ${NC}"
-echo -e "${YELLOW}=============================================================${NC}"
-
-echo -e "1. Configuração PATH (~/.bashrc):  $STATUS_PATH"
-echo -e "2. Binário Distrobox:              $STATUS_DB_INSTALL"
-echo -e "3. Configuração (.distroboxrc):    $STATUS_DB_CONF"
-echo -e "4. Binário Podman:                 $STATUS_PODMAN"
-echo -e "5. Mapeamento User (subuid):       $STATUS_SUBUID"
-
-echo -e "\n${BLUE}--- Versões Instaladas ---${NC}"
-if which distrobox >/dev/null; then
-    echo -n "Distrobox: "
-    distrobox --version
-else
-    echo -e "${RED}Distrobox não encontrado no PATH atual (reinicie o terminal).${NC}"
-fi
-
-if which podman >/dev/null; then
-    echo -n "Podman:    "
-    podman --version
-    echo -e "${BLUE}--- Podman Info (Resumo) ---${NC}"
-    # Mostra apenas as linhas cruciais para não poluir
-    podman info | grep -E "os:|arch:|host:|store:"
-else
-    echo -e "${RED}Podman não encontrado no PATH atual (reinicie o terminal).${NC}"
-fi
-
+echo -e "${GREEN}=============================================================${NC}"
+echo -e "${GREEN}                 VERIFICAÇÃO CONCLUÍDA                       ${NC}"
+echo -e "${GREEN}=============================================================${NC}"
+echo -e "Distrobox: ${BOLD}$(distrobox --version | awk '{print $2}')${NC}"
+echo -e "Podman Tag:${BOLD} $(cat $VERSION_FILE 2>/dev/null || echo 'Erro')${NC}"
 echo ""
-echo -e "${GREEN}DICA:${NC} Se você instalou/alterou algo agora, feche este terminal e abra um novo para que o \$PATH seja carregado corretamente."
