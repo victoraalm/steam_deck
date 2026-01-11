@@ -1,11 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# SCRIPT UNIVERSAL DE DESBLOQUEIO PODMAN (SEM DELEÇÃO)
-# ==============================================================================
-# Alvo: TODOS os containers instalados.
-# Ação: Forçar sincronização de estado e limpeza de processos zumbis.
-# Segurança: NENHUM comando 'rm' é executado nos dados dos containers.
+# SCRIPT UNIVERSAL DE DESBLOQUEIO PODMAN - V2 (ROBUSTO)
 # ==============================================================================
 
 # Definição de Cores
@@ -21,99 +17,84 @@ log_warn() { echo -e "${YELLOW}[CORRIGINDO]${NC} $1"; }
 log_err()  { echo -e "${RED}[ERRO]${NC} $1"; }
 
 echo -e "${YELLOW}=============================================================${NC}"
-echo -e "${YELLOW}   FERRAMENTA DE DESBLOQUEIO GERAL DE CONTAINERS             ${NC}"
+echo -e "${YELLOW}   FERRAMENTA DE DESBLOQUEIO GERAL DE CONTAINERS (V2)        ${NC}"
 echo -e "${YELLOW}=============================================================${NC}"
 
-# 1. LISTAGEM GERAL
+# 1. LIMPEZA DE AMBIENTE (AGORA VEM PRIMEIRO)
 # ------------------------------------------------------------------------------
-log_info "Mapeando todos os containers do sistema..."
+log_info "Preparando o terreno (Passo Crítico)..."
 
-# Formato: ID e NOME. O loop vai ler linha por linha.
-ALL_CONTAINERS=$(podman ps -a --format "{{.ID}} {{.Names}}")
-
-if [ -z "$ALL_CONTAINERS" ]; then
-    log_succ "Nenhum container encontrado no Podman. Nada a fazer."
-    exit 0
-fi
-
-COUNT=$(echo "$ALL_CONTAINERS" | wc -l)
-log_info "Foram encontrados $COUNT container(s). Iniciando varredura..."
-
-# 2. LIMPEZA DE PROCESSOS SOLTOS (PREPARAÇÃO)
-# ------------------------------------------------------------------------------
-# Mata processos auxiliares que podem estar segurando os containers
-log_info "Encerrando processos órfãos (crun/conmon)..."
+# Mata processos auxiliares que podem estar segurando o banco de dados
 pkill -9 crun 2>/dev/null
 pkill -9 conmon 2>/dev/null
+log_succ "Processos órfãos encerrados."
 
-# 3. LOOP DE CORREÇÃO (UM POR UM)
+# Tenta migrar o estado do banco de dados (A CORREÇÃO DO SEU ERRO)
+log_warn "Executando 'system migrate' para corrigir status inválidos..."
+podman system migrate 2>/dev/null
+if [ $? -eq 0 ]; then
+    log_succ "Migração de sistema realizada."
+else
+    log_warn "Migração retornou erro ou não era necessária."
+fi
+
+# 2. LIMPEZA DE ARQUIVOS TEMPORÁRIOS GLOBAIS
 # ------------------------------------------------------------------------------
-echo ""
-while IFS= read -r line; do
-    # Extrai ID e NOME da linha atual
-    CID=$(echo $line | awk '{print $1}')
-    NAME=$(echo $line | awk '{print $2}')
-    
-    echo -e "${BLUE}-------------------------------------------------------------${NC}"
-    echo -e "Alvo: ${YELLOW}$NAME${NC} (ID: $CID)"
-    
-    # PASSO A: CLEANUP
-    # Remove montagens presas e arquivos de trava internos
-    log_warn "Executando limpeza de estado (cleanup)..."
-    OUT_CLEAN=$(podman container cleanup "$CID" 2>&1)
-    
-    if [ $? -eq 0 ]; then
-        log_succ "Cleanup realizado."
-    else
-        # Às vezes falha se o container já estiver muito 'morto', o que é bom
-        echo "   > Retorno: $OUT_CLEAN"
-    fi
-    
-    # PASSO B: FORCE STOP
-    # Força o banco de dados a aceitar que o container parou
-    log_warn "Forçando status 'Stop' no banco de dados..."
-    podman stop --force --time 0 "$CID" >/dev/null 2>&1
-    
-    # PASSO C: VERIFICAÇÃO INDIVIDUAL
-    CURRENT_STATUS=$(podman inspect --format '{{.State.Status}}' "$CID" 2>/dev/null)
-    if [ "$CURRENT_STATUS" == "exited" ] || [ "$CURRENT_STATUS" == "created" ] || [ "$CURRENT_STATUS" == "configured" ]; then
-        log_succ "Status final: $CURRENT_STATUS (Pronto para uso)"
-    else
-        log_err "Status final: $CURRENT_STATUS (Ainda requer atenção)"
-    fi
-
-done <<< "$ALL_CONTAINERS"
-
-# 4. LIMPEZA DE ARQUIVOS TEMPORÁRIOS DO SISTEMA (A SOLUÇÃO CIRÚRGICA)
-# ------------------------------------------------------------------------------
-echo -e "\n${BLUE}-------------------------------------------------------------${NC}"
-log_info "Limpando diretórios temporários globais..."
-
-# Caminho específico onde o Podman Estático guarda os "locks" que causam o erro "Improper"
+# Movemos isso para antes do loop, pois se o lock estiver aqui, o 'ps' nunca funciona.
 RUN_ROOT="/var/tmp/podman-static/1000"
 
 if [ -d "$RUN_ROOT" ]; then
     log_warn "Detectado cache temporário em $RUN_ROOT."
-    log_warn "Solicitando permissão sudo para remover travas de sistema..."
+    log_warn "Tentando limpar travas de sistema (pode pedir senha sudo)..."
     
-    sudo rm -rf "$RUN_ROOT"
+    # Tenta remover sem sudo primeiro (caso seja dono), se falhar, tenta sudo
+    rm -rf "$RUN_ROOT" 2>/dev/null || sudo rm -rf "$RUN_ROOT"
     
-    if [ $? -eq 0 ]; then
-        log_succ "Cache temporário limpo com sucesso."
+    if [ ! -d "$RUN_ROOT" ]; then
+        log_succ "Cache temporário limpo."
     else
-        log_err "Falha ao limpar cache. Senha incorreta?"
+        log_err "Não foi possível remover $RUN_ROOT. Verifique permissões."
     fi
-else
-    log_succ "Cache temporário já estava limpo."
 fi
 
-# 5. RELATÓRIO FINAL
+# 3. LISTAGEM E CORREÇÃO INDIVIDUAL
 # ------------------------------------------------------------------------------
-echo -e "\n${YELLOW}=============================================================${NC}"
-echo -e "${YELLOW}                  STATUS PÓS-CORREÇÃO                        ${NC}"
-echo -e "${YELLOW}=============================================================${NC}"
-podman ps -a
-echo ""
-echo -e "${GREEN}Procedimento concluído.${NC}"
-echo "Seus containers estão preservados e destravados."
-echo "Tente iniciar seu container agora."
+log_info "Agora mapeando containers..."
+
+# O comando ps agora tem mais chance de funcionar
+ALL_CONTAINERS=$(podman ps -a --format "{{.ID}} {{.Names}}")
+
+if [ -z "$ALL_CONTAINERS" ]; then
+    log_succ "Nenhum container encontrado ou listagem falhou. O ambiente foi limpo acima."
+    exit 0
+fi
+
+COUNT=$(echo "$ALL_CONTAINERS" | wc -l)
+log_info "Encontrados $COUNT container(s). Verificando estados..."
+
+while IFS= read -r line; do
+    CID=$(echo $line | awk '{print $1}')
+    NAME=$(echo $line | awk '{print $2}')
+    
+    echo -e "${BLUE}--- Processando: ${YELLOW}$NAME${NC} ($CID)"
+    
+    # Cleanup individual
+    podman container cleanup "$CID" >/dev/null 2>&1
+    
+    # Force Stop
+    podman stop --force --time 0 "$CID" >/dev/null 2>&1
+    
+    # Verificação
+    CURRENT_STATUS=$(podman inspect --format '{{.State.Status}}' "$CID" 2>/dev/null)
+    if [[ "$CURRENT_STATUS" =~ ^(exited|created|configured)$ ]]; then
+        log_succ "Status: $CURRENT_STATUS"
+    else
+        log_err "Status: $CURRENT_STATUS"
+    fi
+
+done <<< "$ALL_CONTAINERS"
+
+# 4. FINAL
+# ------------------------------------------------------------------------------
+echo -e "\n${GREEN}Procedimento concluído.${NC}"
+echo "Tente iniciar seus containers agora."
