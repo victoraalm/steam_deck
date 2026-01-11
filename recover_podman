@@ -24,6 +24,9 @@ echo -e "${YELLOW}=============================================================$
 echo -e "${YELLOW}   FERRAMENTA DE DESBLOQUEIO GERAL DE CONTAINERS             ${NC}"
 echo -e "${YELLOW}=============================================================${NC}"
 
+# Limpa a variavel que causa os erros visuais
+unset LD_PRELOAD
+
 # 1. LISTAGEM GERAL
 # ------------------------------------------------------------------------------
 log_info "Mapeando todos os containers do sistema..."
