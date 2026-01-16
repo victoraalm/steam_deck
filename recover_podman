@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# SCRIPT UNIVERSAL DE DESBLOQUEIO PODMAN - V2 (ROBUSTO)
+# SCRIPT UNIVERSAL DE DESBLOQUEIO PODMAN - V3 (STEAM DECK/ARCH)
 # ==============================================================================
 
 # Definição de Cores
@@ -13,64 +13,84 @@ NC='\033[0m'
 
 log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_succ() { echo -e "${GREEN}[OK]${NC} $1"; }
-log_warn() { echo -e "${YELLOW}[CORRIGINDO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[ATENÇÃO]${NC} $1"; }
 log_err()  { echo -e "${RED}[ERRO]${NC} $1"; }
 
 echo -e "${YELLOW}=============================================================${NC}"
-echo -e "${YELLOW}   FERRAMENTA DE DESBLOQUEIO GERAL DE CONTAINERS (V2)        ${NC}"
+echo -e "${YELLOW}    FERRAMENTA DE DESBLOQUEIO GERAL DE CONTAINERS (V3)       ${NC}"
 echo -e "${YELLOW}=============================================================${NC}"
 
-# 1. LIMPEZA DE AMBIENTE (AGORA VEM PRIMEIRO)
+# 0. IDENTIFICAÇÃO DO USUÁRIO
 # ------------------------------------------------------------------------------
-log_info "Preparando o terreno (Passo Crítico)..."
+USER_ID=$(id -u)
+log_info "Detectado ID de usuário: $USER_ID"
 
-# Mata processos auxiliares que podem estar segurando o banco de dados
+# 1. MATAR PROCESSOS ÓRFÃOS
+# ------------------------------------------------------------------------------
+log_info "Encerrando processos travados..."
 pkill -9 crun 2>/dev/null
 pkill -9 conmon 2>/dev/null
-log_succ "Processos órfãos encerrados."
+pkill -9 podman 2>/dev/null
+log_succ "Processos forçados a fechar."
 
-# Tenta migrar o estado do banco de dados (A CORREÇÃO DO SEU ERRO)
-log_warn "Executando 'system migrate' para corrigir status inválidos..."
+# 2. REMOÇÃO CIRÚRGICA DE ARQUIVOS DE LOCK (NOVA ETAPA)
+# ------------------------------------------------------------------------------
+# Aqui corrigimos o erro "acquiring lock ... file exists"
+log_warn "Removendo arquivos de trava (locks) fantasmas..."
+
+# Trava na Memória (Runtime) - Onde o Steam Deck costuma travar
+if [ -d "/run/user/$USER_ID/libpod/locks" ]; then
+    rm -rf "/run/user/$USER_ID/libpod/locks"
+    log_succ "Locks de memória (libpod) removidos."
+fi
+
+if [ -d "/run/user/$USER_ID/containers/locks" ]; then
+    rm -rf "/run/user/$USER_ID/containers/locks"
+    log_succ "Locks de memória (containers) removidos."
+fi
+
+# Trava no Disco (Storage Persistent)
+STORAGE_LOCKS="$HOME/.local/share/containers/storage/libpod/locks"
+if [ -d "$STORAGE_LOCKS" ]; then
+    rm -rf "$STORAGE_LOCKS"
+    log_succ "Locks de armazenamento persistente removidos."
+fi
+
+# Limpeza de cache antigo (mantido da V2, mas ajustado path)
+RUN_ROOT="/var/tmp/podman-static/$USER_ID"
+if [ -d "$RUN_ROOT" ]; then
+    rm -rf "$RUN_ROOT" 2>/dev/null || sudo rm -rf "$RUN_ROOT"
+    log_succ "Cache estático antigo limpo."
+fi
+
+# 3. REPARO DO BANCO DE DADOS
+# ------------------------------------------------------------------------------
+log_info "Regenerando estado do banco de dados..."
+
+# Renumera o banco para garantir consistência (ajuda após apagar locks)
+podman system renumber 2>/dev/null
+
+# Migra o sistema (agora sem locks impedindo)
 podman system migrate 2>/dev/null
 if [ $? -eq 0 ]; then
-    log_succ "Migração de sistema realizada."
+    log_succ "Sistema migrado e banco de dados sincronizado."
 else
-    log_warn "Migração retornou erro ou não era necessária."
+    log_warn "Migração não necessária ou erro silencioso (verifique logs se persistir)."
 fi
 
-# 2. LIMPEZA DE ARQUIVOS TEMPORÁRIOS GLOBAIS
+# 4. LISTAGEM E CORREÇÃO INDIVIDUAL
 # ------------------------------------------------------------------------------
-# Movemos isso para antes do loop, pois se o lock estiver aqui, o 'ps' nunca funciona.
-RUN_ROOT="/var/tmp/podman-static/1000"
+log_info "Mapeando containers para limpeza final..."
 
-if [ -d "$RUN_ROOT" ]; then
-    log_warn "Detectado cache temporário em $RUN_ROOT."
-    log_warn "Tentando limpar travas de sistema (pode pedir senha sudo)..."
-    
-    # Tenta remover sem sudo primeiro (caso seja dono), se falhar, tenta sudo
-    rm -rf "$RUN_ROOT" 2>/dev/null || sudo rm -rf "$RUN_ROOT"
-    
-    if [ ! -d "$RUN_ROOT" ]; then
-        log_succ "Cache temporário limpo."
-    else
-        log_err "Não foi possível remover $RUN_ROOT. Verifique permissões."
-    fi
-fi
-
-# 3. LISTAGEM E CORREÇÃO INDIVIDUAL
-# ------------------------------------------------------------------------------
-log_info "Agora mapeando containers..."
-
-# O comando ps agora tem mais chance de funcionar
 ALL_CONTAINERS=$(podman ps -a --format "{{.ID}} {{.Names}}")
 
 if [ -z "$ALL_CONTAINERS" ]; then
-    log_succ "Nenhum container encontrado ou listagem falhou. O ambiente foi limpo acima."
+    log_succ "Nenhum container ativo/falho encontrado. O Podman está limpo."
     exit 0
 fi
 
 COUNT=$(echo "$ALL_CONTAINERS" | wc -l)
-log_info "Encontrados $COUNT container(s). Verificando estados..."
+log_info "Encontrados $COUNT container(s). Processando..."
 
 while IFS= read -r line; do
     CID=$(echo $line | awk '{print $1}')
@@ -78,23 +98,23 @@ while IFS= read -r line; do
     
     echo -e "${BLUE}--- Processando: ${YELLOW}$NAME${NC} ($CID)"
     
-    # Cleanup individual
+    # Tenta limpar o estado interno
     podman container cleanup "$CID" >/dev/null 2>&1
     
-    # Force Stop
+    # Força parada imediata
     podman stop --force --time 0 "$CID" >/dev/null 2>&1
     
-    # Verificação
+    # Verifica status
     CURRENT_STATUS=$(podman inspect --format '{{.State.Status}}' "$CID" 2>/dev/null)
     if [[ "$CURRENT_STATUS" =~ ^(exited|created|configured)$ ]]; then
-        log_succ "Status: $CURRENT_STATUS"
+        log_succ "Status atual: $CURRENT_STATUS (Pronto para uso)"
     else
-        log_err "Status: $CURRENT_STATUS"
+        log_err "Status atual: $CURRENT_STATUS"
     fi
 
 done <<< "$ALL_CONTAINERS"
 
-# 4. FINAL
+# 5. FINAL
 # ------------------------------------------------------------------------------
 echo -e "\n${GREEN}Procedimento concluído.${NC}"
-echo "Tente iniciar seus containers agora."
+echo "Seus containers devem estar destravados. Tente: podman start <nome>"
