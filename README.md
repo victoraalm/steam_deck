@@ -20,3 +20,7 @@ Recuperar/destravar podman (geralmente após atualizações da steamos):
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/victoraalm/steam_deck/refs/heads/main/recover_podman)"
 ```
 
+Recuperar/destravar waydroid (geralmente após atualizações da steamos):
+```sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/victoraalm/steam_deck/refs/heads/main/recover_podman)"
+```
